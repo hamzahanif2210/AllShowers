@@ -1,3 +1,83 @@
+"""
+
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir  /n/home04/hhanif/AllShowers/results/20260519_185649_Electron-Allshower \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 4096
+
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir   /n/home04/hhanif/AllShowers/results/20260519_185701_Photon-Allshower \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 8064
+
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir   /n/home04/hhanif/AllShowers/results/20260521_074401_Photon-Allshower \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 8064
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir  /n/home04/hhanif/AllShowers/results/20260520_160031_Muons-Allshower \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_muons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 25088 --batch-size 128
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir  /n/home04/hhanif/AllShowers/results/20260521_191421_Geant4-Allshower \
+  --cond_file /n/home04/hhanif/test_remaining_data_with_num_points.h5 \
+  --num-samples 170000 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 4096 --batch-size 5000
+
+"""
+
+'''
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir /n/home04/hhanif/AllShowers/results/20260305_141348_CNF-Transformer \
+  --num-samples 1000 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/all_shower_processed_step1_v5/merged_all_showers_test_data_with_num_points.h5 \
+    --pdgs 11 211 -11 111 -211
+
+# With time (model trained with samples_time_trafo in config):
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir /n/home04/hhanif/AllShowers/results/20260402_150113_CNF-Transformer \
+  --num-samples 10000 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/combined_electrons_balanced-test-file_data_with_num_points.h5 \
+    --pdgs 0 1
+
+'''
+
 import argparse
 import os
 import platform
@@ -27,13 +107,22 @@ class Generator(nn.Module):
         compile: bool = False,
         solver: str = "heun",
         resize_factor: float = 1.0,
+        max_points: int | None = None,
+        checkpoint: str | None = None,
     ) -> None:
         super().__init__()
 
         run_params_file = os.path.join(run_dir, "conf.yaml")
-        state_dict_file = os.path.join(run_dir, "weights/best.pt")
-        if not os.path.exists(run_params_file):
-            state_dict_file = os.path.join(run_dir, "weights/best-all.pt")
+        if checkpoint is not None:
+            state_dict_file = checkpoint
+        else:
+            import glob
+            matches = sorted(glob.glob(os.path.join(run_dir, "checkpoints/best*.pt")))
+            if not matches:
+                raise FileNotFoundError(
+                    f"no checkpoint matching checkpoints/best*.pt found in {run_dir}"
+                )
+            state_dict_file = matches[-1]
         trafo_file = os.path.join(run_dir, "preprocessing/trafos.pt")
         if not os.path.exists(trafo_file):
             trafo_file = os.path.join(run_dir, "preprocessing/trafos-all.pt")
@@ -50,8 +139,12 @@ class Generator(nn.Module):
         self.to(torch.get_default_dtype())
         self.feature_last = run_params["data"].get("feature_last", False)
         self.num_layers = run_params["model"].get("num_layers", None)
-        self.max_points = run_params["data"].get("max_num_points", 6016)
+        self.max_points = max_points if max_points is not None else run_params["data"].get("max_num_points", 6016)
         self.expects_angles = run_params["model"]["dim_inputs"][-1] > 1
+
+        # Auto-detect time mode from config — no CLI flag needed.
+        # If the model was trained with samples_time_trafo, dim_inputs[0] == 4.
+        self.with_time = run_params["model"]["dim_inputs"][0] == 4
 
     def __init_model(
         self, params: dict[str, Any], state_file: str, solver: str = "heun"
@@ -81,10 +174,20 @@ class Generator(nn.Module):
         self.samples_coordinate_trafo = compose(params.get("samples_coordinate_trafo"))
         self.cond_trafo = compose(params.get("cond_trafo"))
 
+        # Time trafo — only present when model was trained with time
+        if params.get("samples_time_trafo") is not None:
+            self.samples_time_trafo = compose(params.get("samples_time_trafo"))
+        else:
+            self.samples_time_trafo = None
+
         state = torch.load(trafo_file, map_location="cpu", weights_only=True)
         self.samples_energy_trafo.load_state_dict(state["samples_energy_trafo"])
         self.samples_coordinate_trafo.load_state_dict(state["samples_coordinate_trafo"])
         self.cond_trafo.load_state_dict(state["cond_trafo"])
+
+        # Load time trafo state if saved in the trafos file
+        if self.samples_time_trafo is not None and "samples_time_trafo" in state:
+            self.samples_time_trafo.load_state_dict(state["samples_time_trafo"])
 
     def forward(
         self,
@@ -114,22 +217,47 @@ class Generator(nn.Module):
             mask[i, :total_points, 0] = True
         layer = layer.to(condition.device)
         mask = mask.to(condition.device)
-        raw_samples = self.flow.sample(
-            shape=(condition.shape[0], self.max_points, 3),
-            num_timesteps=self.num_timesteps,
-            cond=condition,
-            num_points=num_points,
-            layer=layer,
-            mask=mask,
-            label=label,
-        )
-        samples = torch.zeros(
-            (condition.shape[0], self.max_points, 4), device=raw_samples.device
-        )
-        samples[:, :, :2] = self.samples_coordinate_trafo.inverse(raw_samples[:, :, :2])
-        samples[:, :, 2] = layer.squeeze(2)
-        samples[:, :, 3] = self.samples_energy_trafo.inverse(raw_samples[:, :, 2])
-        samples[~mask.repeat(1, 1, 4)] = 0
+
+        if self.with_time:
+            # Sample 4 features: x, y, e, t
+            raw_samples = self.flow.sample(
+                shape=(condition.shape[0], self.max_points, 4),
+                num_timesteps=self.num_timesteps,
+                cond=condition,
+                num_points=num_points,
+                layer=layer,
+                mask=mask,
+                label=label,
+            )
+            # Reconstruct 5-column output: x, y, z(layer), e, t
+            samples = torch.zeros(
+                (condition.shape[0], self.max_points, 5), device=raw_samples.device
+            )
+            samples[:, :, :2] = self.samples_coordinate_trafo.inverse(raw_samples[:, :, :2])
+            samples[:, :, 2]  = layer.squeeze(2)
+            samples[:, :, 3]  = self.samples_energy_trafo.inverse(raw_samples[:, :, 2])
+            samples[:, :, 4]  = self.samples_time_trafo.inverse(raw_samples[:, :, 3])
+            samples[~mask.repeat(1, 1, 5)] = 0
+        else:
+            # Original: sample 3 features: x, y, e
+            raw_samples = self.flow.sample(
+                shape=(condition.shape[0], self.max_points, 3),
+                num_timesteps=self.num_timesteps,
+                cond=condition,
+                num_points=num_points,
+                layer=layer,
+                mask=mask,
+                label=label,
+            )
+            # Reconstruct 4-column output: x, y, z(layer), e
+            samples = torch.zeros(
+                (condition.shape[0], self.max_points, 4), device=raw_samples.device
+            )
+            samples[:, :, :2] = self.samples_coordinate_trafo.inverse(raw_samples[:, :, :2])
+            samples[:, :, 2]  = layer.squeeze(2)
+            samples[:, :, 3]  = self.samples_energy_trafo.inverse(raw_samples[:, :, 2])
+            samples[~mask.repeat(1, 1, 4)] = 0
+
         return samples
 
 
@@ -176,11 +304,11 @@ def generate(
 def get_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generates new samples")
     parser.add_argument(
-        "run_dir",
+        "--run-dir",
         help="directory that contains the model's weights and where the generated samples should be saved",
     )
     parser.add_argument(
-        "cond_file",
+        "--cond_file",
         help="file with the conditioning information (e.g. energies, number of points)",
     )
     parser.add_argument(
@@ -221,6 +349,18 @@ def get_args(args: list[str] | None = None) -> argparse.Namespace:
         help="ODE solver to use during generation. default: heun",
     )
     parser.add_argument(
+        "--checkpoint",
+        default=None,
+        type=str,
+        help="path to a specific checkpoint .pt file. overrides the default weights/best.pt",
+    )
+    parser.add_argument(
+        "--max-points",
+        default=None,
+        type=int,
+        help="maximum number of points per shower, overrides the value in conf.yaml (default: use conf.yaml value, usually 6016)",
+    )
+    parser.add_argument(
         "--pdgs",
         default=[11, -11, 22, 130, 211, -211, 321, -321, 2112, -2112, 2212, -2212],
         nargs="+",
@@ -258,9 +398,9 @@ def main(args: list[str] | None = None) -> None:
         device = "cpu"
     torch.set_default_device(device)
     if "cuda" in device.lower():
-        print("devise:", torch.cuda.get_device_name(torch.device(device)))
+        print("device:", torch.cuda.get_device_name(torch.device(device)))
     elif device.lower() == "cpu":
-        print("devise:", platform.processor())
+        print("device:", platform.processor())
     print("num threads:", torch.get_num_threads())
     sys.stdout.flush()
 
@@ -270,7 +410,12 @@ def main(args: list[str] | None = None) -> None:
         compile=("cuda" in device.lower()),
         solver=parsed_args.solver,
         resize_factor=parsed_args.rescale_factor,
+        max_points=parsed_args.max_points,
+        checkpoint=parsed_args.checkpoint,
     )
+
+    print_time(f"time mode: {'ON (x,y,e,t)' if generator.with_time else 'OFF (x,y,e)'}")
+
     cond_data = showerdata.observables.read_observables_from_file(
         parsed_args.cond_file,
         observables=[

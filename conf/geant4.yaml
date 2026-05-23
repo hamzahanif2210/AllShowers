@@ -1,0 +1,40 @@
+run_name: Geant4-Allshower
+
+
+data:
+  path: /n/home04/hhanif/train_130k.h5
+  samples_energy_trafo:
+    - [Log, {alpha: 0.0}]
+    - [StandardScaler, {shape: [1, 1]}]
+  samples_coordinate_trafo:
+    - [StandardScaler, {shape: [1, 1, 2]}]
+  cond_trafo:
+    - [Log, {alpha: 0.0}]
+    - [StandardScaler, {shape: [1, 1]}]
+  return_noise: True
+  return_direction: True
+  val_len: 30000
+
+
+model:
+  num_layers: 76
+  dim_inputs: [3, 6, 4]   
+  dim_embedding: 64
+  num_head: 4
+  num_blocks: 4
+  dim_feedforward: 256
+  num_points_cond: 512
+  activation: GELU
+  num_layer_cond: 4
+  num_particles: 2
+  flow_config:
+    frequencies: 3
+
+train:
+  num_epochs: 200
+  batch_size: 256
+  learning_rate: 1.e-3
+  optimizer: Ranger
+  scheduler: Cosine
+  weight_decay: 1.e-2
+  grad_clip: 0.2

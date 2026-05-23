@@ -31,7 +31,8 @@ def compute_mask(
             )
             upper_bound = layer[b, q_idx] - layer[b, kv_idx] <= num_layer_cond // 2
             not_padding = padding_mask[b, q_idx] & padding_mask[b, kv_idx]
-            return lower_bound & upper_bound & not_padding
+            return (lower_bound & upper_bound & not_padding) | (q_idx == kv_idx)
+
 
     sequence_length = padding_mask.shape[1]
     batch_size = padding_mask.shape[0]
@@ -124,8 +125,8 @@ class FlexEncoderLayer(nn.Module):
         x: Tensor,
         mask: BlockMask,
     ) -> Tensor:
-        x = self.layer_norm1(x + self.multihead_attention(x, mask=mask))
-        x = self.layer_norm2(x + self.feedforward(x))
+        x = x + self.multihead_attention(self.layer_norm1(x), mask=mask)
+        x = x + self.feedforward(self.layer_norm2(x))
         return x
 
 

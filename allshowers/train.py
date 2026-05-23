@@ -52,8 +52,11 @@ class Trainer:
         self.result_path = conf["result_path"]
         self.batch_size = (self.batch_size + self.world_size - 1) // self.world_size
 
-        self.checkpoint_file = self.get_path("checkpoints/last.pt")
-        self.best_file = self.get_path("weights/best.pt")
+        # Checkpoint paths are computed dynamically (epoch + losses in name).
+        # These attributes always point to the *current* last/best files on disk
+        # so old ones can be removed before writing new ones.
+        self._last_checkpoint_file: str | None = None
+        self._best_checkpoint_file: str | None = None
         self.final_file = self.get_path("weights/final.pt")
         self.plot_folder = "plots/"
         trafos_file = self.get_path("preprocessing/trafos.pt")
@@ -95,11 +98,18 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.killed = False
-        self.min_val_loss = float("inf")
+        self.min_train_loss = float("inf")
         self.min_score = float("inf")
 
-        if os.path.exists(self.checkpoint_file):
-            self.load()
+        # Resume from an explicit checkpoint if requested; otherwise auto-resume
+        # from the most recent last-checkpoint in the checkpoints/ folder.
+        resume_ckpt = conf.get("resume_ckpt_file", None)
+        if resume_ckpt:
+            self.load(resume_ckpt)
+        else:
+            last_ckpt = self._find_last_checkpoint()
+            if last_ckpt:
+                self.load(last_ckpt)
 
     def init_model(self, model_config: dict[str, Any]) -> None:
         if "flow_config" in model_config:
@@ -206,7 +216,42 @@ class Trainer:
                 f"Scheduler {self.scheduler_name} not implemented."
             )
 
-    def init_path(self) -> None:
+    def _checkpoint_name(self, kind: str, epoch: int, train_loss: float, val_loss: float) -> str:
+        """Return a checkpoint filename encoding kind, epoch, and losses."""
+        return f"{kind}_epoch_{epoch:04d}_train_loss_{train_loss:.4f}_val_loss_{val_loss:.4f}.pt"
+
+    def _find_last_checkpoint(self) -> str | None:
+        """Return the path of the most recent last-checkpoint, or None."""
+        ckpt_dir = self.get_path("checkpoints/")
+        try:
+            files = [
+                f for f in os.listdir(ckpt_dir)
+                if f.startswith("last_epoch_") and f.endswith(".pt")
+            ]
+        except FileNotFoundError:
+            return None
+        if not files:
+            return None
+        # Pick the one with the highest epoch number (encoded in filename).
+        files.sort()
+        return os.path.join(ckpt_dir, files[-1])
+
+    def _find_best_checkpoint(self) -> str | None:
+        """Return the path of the current best-checkpoint, or None."""
+        ckpt_dir = self.get_path("checkpoints/")
+        try:
+            files = [
+                f for f in os.listdir(ckpt_dir)
+                if f.startswith("best_epoch_") and f.endswith(".pt")
+            ]
+        except FileNotFoundError:
+            return None
+        if not files:
+            return None
+        files.sort()
+        return os.path.join(ckpt_dir, files[-1])
+
+
         if "result_path" not in self.conf or not os.path.isdir(
             self.conf["result_path"]
         ):
@@ -351,6 +396,10 @@ class Trainer:
         for key in list(flow_state_dict.keys()):
             if "module." in key:
                 flow_state_dict[key.replace("module.", "")] = flow_state_dict.pop(key)
+
+        train_loss = self.train_losses[-1]
+        val_loss = self.val_losses[-1]
+
         checkpoint = {
             "flow": flow_state_dict,
             "epoch": self.epoch,
@@ -360,20 +409,30 @@ class Trainer:
             "scores": self.scores,
             "learning_rates": self.learning_rates,
             "grad_norms": self.grad_norms,
-            "min_val_loss": self.min_val_loss,
+            "min_train_loss": self.min_train_loss,
             "min_score": self.min_score,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": scheduler_state_dict,
         }
-        if os.path.exists(self.checkpoint_file):
-            os.remove(self.checkpoint_file)
-        torch.save(checkpoint, self.checkpoint_file)
 
-        if self.val_losses[-1] < self.min_val_loss:
-            self.min_val_loss = self.val_losses[-1]
-            if os.path.exists(self.best_file):
-                os.remove(self.best_file)
-            torch.save(flow_state_dict, self.best_file)
+        # --- last checkpoint: remove previous, write new with losses in name ---
+        new_last_name = self._checkpoint_name("last", self.epoch, train_loss, val_loss)
+        new_last_path = self.get_path(f"checkpoints/{new_last_name}")
+        if self._last_checkpoint_file and os.path.exists(self._last_checkpoint_file):
+            os.remove(self._last_checkpoint_file)
+        torch.save(checkpoint, new_last_path)
+        self._last_checkpoint_file = new_last_path
+
+        # --- best checkpoint: remove previous, write new if train loss improved ---
+        if train_loss < self.min_train_loss:
+            self.min_train_loss = train_loss
+            new_best_name = self._checkpoint_name("best", self.epoch, train_loss, val_loss)
+            new_best_path = self.get_path(f"checkpoints/{new_best_name}")
+            if self._best_checkpoint_file and os.path.exists(self._best_checkpoint_file):
+                os.remove(self._best_checkpoint_file)
+            torch.save(flow_state_dict, new_best_path)
+            self._best_checkpoint_file = new_best_path
+            print(f"  -> new best checkpoint: {new_best_name}")
 
         if bool(self.scores) and (self.scores[-1] < self.min_score):
             self.min_score = self.scores[-1]
@@ -388,11 +447,11 @@ class Trainer:
             print("exit")
             sys.exit(0)
 
-    def load(self) -> None:
+    def load(self, checkpoint_path: str) -> None:
         old_weights = self.flow.state_dict()
         try:
             checkpoint = torch.load(
-                self.checkpoint_file, map_location=self.device, weights_only=True
+                checkpoint_path, map_location=self.device, weights_only=True
             )
             if isinstance(self.flow.network, DDP):
                 for key in list(checkpoint["flow"].keys()):
@@ -403,11 +462,9 @@ class Trainer:
             self.flow.load_state_dict(checkpoint["flow"], strict=True)
         except Exception:
             warnings.warn(
-                f"Loading {os.path.basename(self.checkpoint_file)} failed. Deleting it."
+                f"Loading {os.path.basename(checkpoint_path)} failed. Skipping resume."
             )
             sys.stdout.flush()
-            if os.path.exists(self.checkpoint_file):
-                os.remove(self.checkpoint_file)
             self.flow.load_state_dict(old_weights)
             return
 
@@ -418,14 +475,23 @@ class Trainer:
         self.scores = checkpoint["scores"]
         self.learning_rates = checkpoint["learning_rates"]
         self.grad_norms = checkpoint["grad_norms"]
-        self.min_val_loss = checkpoint["min_val_loss"]
+        self.min_train_loss = checkpoint["min_train_loss"]
         self.min_score = checkpoint["min_score"]
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         if self.scheduler is not None:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
 
+        # Track which files are on disk so save() can clean them up.
+        basename = os.path.basename(checkpoint_path)
+        if basename.startswith("last_epoch_"):
+            self._last_checkpoint_file = checkpoint_path
+            # Also discover existing best checkpoint to avoid orphaning it.
+            self._best_checkpoint_file = self._find_best_checkpoint()
+        # If loaded from an explicit (non-last) checkpoint, leave pointers as
+        # None so the next save() simply writes fresh files.
+
         print(
-            f"[rank={self.rank}]: Loaded {self.checkpoint_file} at epoch {self.epoch}."
+            f"[rank={self.rank}]: Loaded {checkpoint_path} at epoch {self.epoch}."
         )
         sys.stdout.flush()
 
