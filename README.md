@@ -1,10 +1,7 @@
-# AllShowers
-[![arXiv](https://img.shields.io/badge/arXiv-2601.11716-b31b1b?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2601.11716)
-[![Python Version](https://img.shields.io/badge/Python_3.13-306998?logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch Version](https://img.shields.io/badge/PyTorch_2.8-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/FLC-QU-hep/AllShowers?tab=MIT-1-ov-file)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/FLC-QU-hep/AllShowers/pre_commit.yaml?label=pre-commit&logo=github)](https://github.com/FLC-QU-hep/AllShowers/actions/workflows/pre_commit.yaml)
-[![Tests](https://img.shields.io/github/actions/workflow/status/FLC-QU-hep/AllShowers/test.yaml?label=tests&logo=github)](https://github.com/FLC-QU-hep/AllShowers/actions/workflows/test.yaml)
+# AllShowers-1.5
+
+
+This is forked of [Allshowers github repo](https://github.com/FLC-QU-hep/AllShowers/tree/main) with some modifications to make it work for other use cases we are considering.
 
 A conditional flow matching model with transformer architecture for calorimeter shower point clouds.
 
@@ -68,7 +65,9 @@ export HDF5_USE_FILE_LOCKING=FALSE
 # run OT matching
 python allshowers/OT_match.py conf/transformer.yaml
 ```
-The latent points will be stored in the same h5 file. Preprocessing and data file path will be read from the config file. If preprocessing transformations or data path change, you need to re-run the OT matching.
+The latent points will be stored in the same h5 file. Preprocessing and data file path will be read from the config file. If preprocessing transformations or data path change, you need to re-run the OT matching. 
+
+If sample size is big or if there are lot of point clouds, please use `ot_match_big.sh` script.
 
 If you do not want to use OT matched latent points, you need to set `return_noise: False` in the data section of the config file. Some of the unit tests will fail if you do not compute OT matched latent points first.
 
@@ -194,11 +193,3 @@ The configuration files are written in YAML format. You can find an example in `
 | `momentum` | float | Momentum for SGD optimizer. Ignored for other optimizers. | 0.0 |
 
 
----
-For questions/comments about the code contact: thorsten.buss@uni-hamburg.de
-
-This code was written for the paper:
-
-**AllShowers: One model for all calorimeter showers**<br/>
-[https://arxiv.org/abs/2601.11716](https://arxiv.org/abs/2601.11716)<br/>
-*Thorsten Buss, Henry Day-Hall, Frank Gaede, Gregor Kasieczka and Katja Krüger*
