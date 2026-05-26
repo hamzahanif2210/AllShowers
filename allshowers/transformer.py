@@ -55,6 +55,7 @@ class FlexEncoderLayer(nn.Module):
         dim_feedforward: int = 2048,
         activation: str | torch.nn.Module = "relu",
         dropout: float = 0.0,
+        attn_type: str = "flex",
     ) -> None:
         if dim_embedding % num_head != 0:
             raise ValueError(
@@ -65,6 +66,7 @@ class FlexEncoderLayer(nn.Module):
         self.num_head = num_head
         self.dim_embedding = dim_embedding
         self.dim_head = dim_embedding // num_head
+        self.attn_type = attn_type
 
         activation_classes = {
             "relu": nn.ReLU,
@@ -82,7 +84,14 @@ class FlexEncoderLayer(nn.Module):
         else:
             self.dropout = nn.Identity()
 
-        self.key_query_value = nn.Linear(dim_embedding, dim_embedding * 3)
+        if attn_type == "flex":
+            self.key_query_value = nn.Linear(dim_embedding, dim_embedding * 3)
+            self.fast_attn = None
+        else:
+            from allshowers.attention import Attention
+            self.key_query_value = None
+            self.fast_attn = Attention(dim=dim_embedding, num_heads=num_head, attn_type=attn_type)
+
         self.feedforward = nn.Sequential(
             nn.Linear(dim_embedding, dim_feedforward),
             activation_module,
@@ -96,7 +105,15 @@ class FlexEncoderLayer(nn.Module):
         self,
         x: Tensor,
         mask: BlockMask,
+        padding_mask: Tensor | None = None,
     ) -> Tensor:
+        if self.fast_attn is not None:
+            # flash-varlen and torch use the boolean padding mask; flash ignores masking
+            if self.attn_type in ("flash-varlen", "torch"):
+                return self.fast_attn(x, kv_mask=padding_mask)
+            return self.fast_attn(x)
+
+        # Original flex_attention path
         key_query_value: Tensor = self.key_query_value(x)
         key_query_value = key_query_value.view(
             key_query_value.shape[0],
@@ -124,8 +141,9 @@ class FlexEncoderLayer(nn.Module):
         self,
         x: Tensor,
         mask: BlockMask,
+        padding_mask: Tensor | None = None,
     ) -> Tensor:
-        x = x + self.multihead_attention(self.layer_norm1(x), mask=mask)
+        x = x + self.multihead_attention(self.layer_norm1(x), mask=mask, padding_mask=padding_mask)
         x = x + self.feedforward(self.layer_norm2(x))
         return x
 
@@ -145,6 +163,7 @@ class Transformer(nn.Module):
         num_layer_cond: int = -1,
         num_particles: int = 1,
         dropout: float = 0.0,
+        attn_type: str = "flex",
     ) -> None:
         super().__init__()
         self.num_layer_cond = num_layer_cond
@@ -182,6 +201,7 @@ class Transformer(nn.Module):
                     dim_feedforward=dim_feedforward,
                     activation=activation_module,
                     dropout=dropout,
+                    attn_type=attn_type,
                 )
                 for _ in range(num_blocks)
             ]
@@ -207,6 +227,7 @@ class Transformer(nn.Module):
         layer: Tensor,
         block_mask: BlockMask,
         label: Tensor | None = None,
+        padding_mask: Tensor | None = None,
     ) -> Tensor:
         x = self.embedding(x)
         x += self.layer_embedding(layer.squeeze())
@@ -221,7 +242,7 @@ class Transformer(nn.Module):
             )
             x += num_points.unsqueeze(1)
         for block in self.transformer_blocks:
-            x = block(x, mask=block_mask)
+            x = block(x, mask=block_mask, padding_mask=padding_mask)
         return self.head(x)
 
 

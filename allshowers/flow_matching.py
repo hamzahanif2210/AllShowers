@@ -56,6 +56,8 @@ class CNF(nn.Module):
             )
         mask = kwargs["mask"]
         del kwargs["mask"]
+        # Flattened boolean mask for flash/torch backends; (B, S)
+        kwargs["padding_mask"] = mask.flatten(1)
         kwargs["block_mask"] = compute_mask(
             padding_mask=mask,
             layer=kwargs["layer"],
