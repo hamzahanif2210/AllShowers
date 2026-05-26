@@ -1,0 +1,203 @@
+# =============================================================================
+# Example config showing all new features added to AllShowers.
+#
+# Run with:  python allshowers/train.py conf/example_advanced.yaml
+# Generate:  python allshowers/generator.py --run-dir <result_dir> \
+#                --solver euler --num-timesteps 20
+# =============================================================================
+
+run_name: Example-Advanced
+
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  path: /path/to/your/showers.h5
+
+  # Energy transform: log-normalise then standardise
+  samples_energy_trafo:
+    - [Log, {alpha: 0.0}]
+    - [StandardScaler, {shape: [1, 1]}]
+
+  # XY coordinate transform
+  samples_coordinate_trafo:
+    - [StandardScaler, {shape: [1, 1, 2]}]
+
+  # Conditioning (incident energy) transform
+  cond_trafo:
+    - [Log, {alpha: 0.0}]
+    - [StandardScaler, {shape: [1, 1]}]
+
+  # Optional arrival-time feature (set dim_inputs[0]: 4 to enable)
+  samples_time_trafo:
+    - [Log, {alpha: 1.0e-6}]
+    - [StandardScaler, {shape: [1, 1]}]
+
+  return_noise: true
+  return_direction: true
+  val_len: 10000
+  num_layers: 24      # copied from model.num_layers automatically by train.py
+
+
+# ---------------------------------------------------------------------------
+# Model — original Transformer with flash attention
+# ---------------------------------------------------------------------------
+model:
+  # ---- input / output ----
+  dim_inputs: [4, 6, 4]    # [point_features, cond_features + angles, ...]
+  num_layers: 24            # number of calorimeter layers (used for layer embedding)
+  num_particles: 2          # number of particle species (label embedding)
+
+  # ---- architecture ----
+  dim_embedding: 128
+  num_head: 8
+  num_blocks: 6
+  dim_feedforward: 512
+  num_points_cond: 512      # 0 = disable num-points conditioning MLP
+  activation: GELU
+  num_layer_cond: 4         # local-layer context window (-1 = full)
+  identity_init: true       # zero-init output head for stable early training
+
+  # ---- attention backend ----
+  # "flex"         — default, uses torch.nn.attention.flex_attention + BlockMask
+  #                  (supports structured sparsity via num_layer_cond)
+  # "flash"        — flash_attn_func, fastest on Ampere/Hopper GPUs,
+  #                  no mask (padding handled by loss masking in train.py)
+  # "flash-varlen" — flash_attn_varlen_func, packs variable-length sequences,
+  #                  uses boolean padding_mask; eliminates wasted compute on padding
+  # "torch"        — scaled_dot_product_attention, CPU/MPS compatible,
+  #                  uses boolean padding_mask
+  attn_type: flash
+
+  flow_config:
+    frequencies: 3          # Fourier time-embedding frequencies
+    solver: heun             # default ODE solver used at sample time
+
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+train:
+  num_epochs: 200
+  batch_size: 512
+  learning_rate: 1.0e-3
+  optimizer: Ranger          # Adam | AdamW | SGD | Ranger
+  scheduler: CosineWarmup    # null | Step | Exponential | OneCycle | Cosine | CosineWarmup
+  weight_decay: 1.0e-2
+  grad_clip: 0.2
+  grad_accum: 1              # gradient accumulation steps
+
+
+# ---------------------------------------------------------------------------
+# EMA — Exponential Moving Average of model weights
+#
+# EMAOptimizer is a drop-in replacement for any torch optimizer.
+# To use it, wrap the optimizer created in train.py::configure_optimizer:
+#
+#   from allshowers.ema import EMAOptimizer
+#   self.optimizer = EMAOptimizer(
+#       self.optimizer,
+#       device=self.device,
+#       decay=ema.decay,
+#       every_n_steps=ema.every_n_steps,
+#       ema_start_step=ema.ema_start_step,
+#   )
+#
+# Then evaluate with:
+#   with self.optimizer.swap_ema_weights():
+#       val_loss = evaluate(model)
+# ---------------------------------------------------------------------------
+ema:
+  decay: 0.9999
+  every_n_steps: 1
+  ema_start_step: 1000      # wait N steps before starting EMA accumulation
+  cpu_offload: false        # store EMA params on CPU to save GPU memory
+
+
+# ---------------------------------------------------------------------------
+# Samplers available in allshowers/sampler.py
+# (used directly — not configured via this YAML, shown here for reference)
+#
+# from allshowers.sampler import EulerSampler, HeunSampler, RK4Sampler
+# from allshowers.sampler import MidpointSampler, PNDMSampler
+# from allshowers.sampler import NonSingularSampler, SDESampler
+#
+# --- Euler (cheapest, 1 NFE/step) ---
+# sampler = EulerSampler(n_steps=50)
+#
+# --- Heun (2nd-order, 2 NFE/step) ---
+# sampler = HeunSampler(n_steps=20)
+#
+# --- RK4 (4th-order, 4 NFE/step) ---
+# sampler = RK4Sampler(n_steps=10)
+#
+# --- PNDM (Adams-Bashforth predictor, ~1 NFE/step after warmup) ---
+# sampler = PNDMSampler(n_steps=20, init_step="heun")
+#
+# --- Non-Singular SDE (arxiv:2410.02217) ---
+# sampler = NonSingularSampler(n_steps=50, g_scale=0.1, n=1.0, m=0.0)
+#
+# --- Reverse-time SDE ---
+# sampler = SDESampler(n_steps=50, eta=1.0, reverse_time=True,
+#                      diffusion_mode="linear")  # or "sdbm", "increasing-decreasing"
+#
+# --- EDM-style non-uniform time schedule ---
+# sampler = EulerSampler(
+#     n_steps=50,
+#     use_edm_schedule=True,
+#     edm_config={"sigma_max": 80.0, "sigma_min": 0.002, "rho": 7},
+# )
+#
+# --- Heavy-tailed initial noise (Student-t df=7) ---
+# sampler = EulerSampler(n_steps=50, heavy_tail=True)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# DPM-Solver (allshowers/dpm.py) — fastest high-quality ODE solver
+# (use directly in inference scripts, not wired into generator.py yet)
+#
+# from allshowers.dpm import DPM_Solver
+#
+# solver = DPM_Solver(model_fn=lambda x, t, ctxt: model(x, t, ctxt)[0])
+# x0 = solver.sample(
+#     x=noise,
+#     ctxt_dict=ctxt,
+#     steps=20,
+#     order=2,              # 1 | 2 | 3
+#     lower_order_final=True,
+#     flow_shift=1.0,       # >1 biases time steps toward harder high-noise region
+# )
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# DiTEncoder (allshowers/transformer.py — DiTEncoder class)
+# Fully separate from the original Transformer; use for new experiments.
+#
+# from allshowers.transformer import DiTEncoder
+#
+# encoder = DiTEncoder(
+#     hidden_dim=256,
+#     num_heads=8,
+#     num_layers=6,
+#     mha_config={
+#         "attn_type": "flash",      # "torch" | "flex" | "flash" | "flash-varlen"
+#         "attn_gating": True,       # per-head output gating
+#         "qk_norm": True,           # RMSNorm on Q and K before dot-product
+#         "v_norm": False,
+#         "value_residual": False,
+#     },
+#     mlp_ratio=4.0,
+#     ctxt_ratio=3.0,                # context dim = hidden_dim * ctxt_ratio
+#     attn_type="flash",
+#     do_selfattn=True,              # prepend self-attention before cross-attention
+#     bidirectional=True,            # seq_b also attends to seq_a
+#     simplify=False,                # True = fuse MLP into attention projection
+#     norm="rms",                    # "rms" (RMSNorm) | "layer" (LayerNorm)
+#     intermediate_idx_to_return=3,  # also return seq_a after layer 3 (-1 = off)
+# )
+#
+# seq_a, seq_b, intermediate = encoder(seq_a, seq_b, ctxt, mask_a, mask_b)
+# ---------------------------------------------------------------------------
