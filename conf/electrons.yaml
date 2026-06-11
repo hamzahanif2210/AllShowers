@@ -31,15 +31,25 @@ model:
   activation: GELU
   num_layer_cond: 4
   num_particles: 2
+  qk_norm: true
+  v_norm: false
+  value_residual: true
+  attn_gating: true
+  fused_mlp: true
   flow_config:
     frequencies: 3
+    time_schedule: pow
+
 
 train:
-  num_epochs: 200
+  num_epochs: 60
   batch_size: 256
-  learning_rate: 1.e-3
-  optimizer: Ranger
-  scheduler: Cosine
+  learning_rate: 3.e-5
+  optimizer: lion
+  scheduler: CosineWarmup
+  scheduler_kwargs:
+    gamma: 0.5
   weight_decay: 1.e-2
   grad_clip: 0.2
-       # change from 0.2
+  ema_decay: 0.9999      # back to 0.9999, since it no longer affects val loss
+  ema_start_step: 500    # keep this, lets model stabilise before EMA kicks in

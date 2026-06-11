@@ -13,6 +13,16 @@ python /n/home04/hhanif/AllShowers/allshowers/generator.py \
 
 
 python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir /n/home04/hhanif/AllShowers/results/20260610_003211_Electron-Allshower \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 4096 --checkpoint-type best_ema --batch-size 500
+
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
   --run-dir   /n/home04/hhanif/AllShowers/results/20260519_185701_Photon-Allshower \
   --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test_data_with_num_points.h5 \
   --num-samples 6141 \
@@ -79,6 +89,8 @@ python /n/home04/hhanif/AllShowers/allshowers/generator.py \
 '''
 
 import argparse
+import glob
+import inspect
 import os
 import platform
 import sys
@@ -98,6 +110,12 @@ from allshowers.preprocessing import compose
 
 start = time.perf_counter()
 
+_CHECKPOINT_PATTERNS = {
+    "best":     "checkpoints/best_epoch*.pt",
+    "best_ema": "checkpoints/best_ema*.pt",
+    "last":     "checkpoints/last*.pt",
+}
+
 
 class Generator(nn.Module):
     def __init__(
@@ -109,20 +127,30 @@ class Generator(nn.Module):
         resize_factor: float = 1.0,
         max_points: int | None = None,
         checkpoint: str | None = None,
+        checkpoint_type: str | None = None,
     ) -> None:
         super().__init__()
 
         run_params_file = os.path.join(run_dir, "conf.yaml")
+
         if checkpoint is not None:
+            # Explicit path takes priority over --checkpoint-type
             state_dict_file = checkpoint
         else:
-            import glob
-            matches = sorted(glob.glob(os.path.join(run_dir, "checkpoints/best*.pt")))
+            checkpoint_type = checkpoint_type or "best"
+            if checkpoint_type not in _CHECKPOINT_PATTERNS:
+                raise ValueError(
+                    f"--checkpoint-type must be one of: {list(_CHECKPOINT_PATTERNS)}, "
+                    f"got {checkpoint_type!r}"
+                )
+            pattern = os.path.join(run_dir, _CHECKPOINT_PATTERNS[checkpoint_type])
+            matches = sorted(glob.glob(pattern))
             if not matches:
                 raise FileNotFoundError(
-                    f"no checkpoint matching checkpoints/best*.pt found in {run_dir}"
+                    f"no checkpoint matching {pattern!r} found in {run_dir}"
                 )
             state_dict_file = matches[-1]
+
         trafo_file = os.path.join(run_dir, "preprocessing/trafos.pt")
         if not os.path.exists(trafo_file):
             trafo_file = os.path.join(run_dir, "preprocessing/trafos-all.pt")
@@ -151,6 +179,20 @@ class Generator(nn.Module):
     ) -> None:
         flow_config = params.pop("flow_config") if "flow_config" in params else {}
         flow_config["solver"] = solver
+
+        # Drop any keys that this version of Transformer doesn't accept,
+        # e.g. 'qk_norm' added in a newer training config.
+        valid_keys = inspect.signature(transformer.Transformer.__init__).parameters.keys()
+        unknown = {k: v for k, v in params.items() if k not in valid_keys}
+        if unknown:
+            warnings.warn(
+                f"Ignoring unrecognised Transformer kwargs (not supported by this "
+                f"version of transformer.Transformer): {list(unknown.keys())}. "
+                f"If any of these were active during training the generated samples "
+                f"may differ from training behaviour."
+            )
+            params = {k: v for k, v in params.items() if k in valid_keys}
+
         network = transformer.Transformer(**params)
         state_dict = torch.load(state_file, map_location="cpu", weights_only=True)
         trained_compiled = any("_orig_mod." in key for key in state_dict)
@@ -352,7 +394,16 @@ def get_args(args: list[str] | None = None) -> argparse.Namespace:
         "--checkpoint",
         default=None,
         type=str,
-        help="path to a specific checkpoint .pt file. overrides the default weights/best.pt",
+        help="path to a specific checkpoint .pt file. overrides --checkpoint-type",
+    )
+    parser.add_argument(
+        "--checkpoint-type",
+        default=None,
+        choices=["best", "best_ema", "last"],
+        help=(
+            "which checkpoint to load: best (default), best_ema, or last. "
+            "ignored if --checkpoint is given explicitly."
+        ),
     )
     parser.add_argument(
         "--max-points",
@@ -412,6 +463,7 @@ def main(args: list[str] | None = None) -> None:
         resize_factor=parsed_args.rescale_factor,
         max_points=parsed_args.max_points,
         checkpoint=parsed_args.checkpoint,
+        checkpoint_type=parsed_args.checkpoint_type,
     )
 
     print_time(f"time mode: {'ON (x,y,e,t)' if generator.with_time else 'OFF (x,y,e)'}")

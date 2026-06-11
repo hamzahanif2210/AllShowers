@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import datetime
 import os
 import signal
@@ -18,6 +19,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.utils import clip_grad_norm_, get_total_norm
 
 from allshowers import data_loader, data_sets, flow_matching, transformer, util
+from allshowers.ema import EMAOptimizer
+from allshowers.optimizer import Lion
+from allshowers.scheduler import CosineAnnealingWarmupRestarts, WarmupDecayConstLR
 
 
 class Trainer:
@@ -47,8 +51,12 @@ class Trainer:
             "optimizer", "AdamW" if self.weight_decay > 0 else "Adam"
         )
         self.scheduler_name = conf["train"].get("scheduler", None)
+        self.scheduler_conf = conf["train"].get("scheduler_kwargs", {})
         self.grad_clip = conf["train"].get("grad_clip", None)
         self.grad_accum = conf["train"].get("grad_accum", 1)
+        self.ema_decay = conf["train"].get("ema_decay", None)
+        self.ema_start_step = conf["train"].get("ema_start_step", 0)
+        self.ema_every_n_steps = conf["train"].get("ema_every_n_steps", 1)
         self.result_path = conf["result_path"]
         self.batch_size = (self.batch_size + self.world_size - 1) // self.world_size
 
@@ -74,6 +82,24 @@ class Trainer:
         )
         self.trafos = {key: value.to(self.device) for key, value in self.trafos.items()}
         self.configure_optimizer()
+
+        # Optionally wrap the optimizer with EMA.
+        # Set ema_decay in the train config to enable (e.g. 0.9999).
+        if self.ema_decay is not None:
+            self.optimizer = EMAOptimizer(
+                self.optimizer,
+                device=self.device,
+                decay=self.ema_decay,
+                every_n_steps=self.ema_every_n_steps,
+                current_step=0,
+                ema_start_step=self.ema_start_step,
+            )
+            if self.rank == 0:
+                print(
+                    f"EMA enabled: decay={self.ema_decay}, "
+                    f"start_step={self.ema_start_step}, "
+                    f"every_n_steps={self.ema_every_n_steps}"
+                )
 
         if self.rank == 0:
             number_of_parameters = sum(
@@ -158,6 +184,13 @@ class Trainer:
                 lookahead_steps=6,
                 lookahead_alpha=0.5,
             )
+        elif optimizer_name == "lion":
+            self.optimizer = Lion(
+                params=self.flow.network.parameters(),
+                lr=self.learning_rate,
+                betas=(0.9, 0.99),
+                weight_decay=self.weight_decay,
+            )
         else:
             raise NotImplementedError(
                 f"Optimizer {self.optimizer_name} not implemented."
@@ -189,26 +222,33 @@ class Trainer:
                 optimizer=self.optimizer, T_max=self.num_epochs
             )
             self.scheduler_interval = "epoch"
-        elif self.scheduler_name.lower() == "CosineWarmup".lower():
-            warmup_epochs = 1
-            self.scheduler = optim.lr_scheduler.SequentialLR(
+        elif self.scheduler_name.lower() in ("cosinewarmup", "cosineannealingwarmuprestarts"):
+            steps_per_epoch = len(self.train_loader) // self.grad_accum
+            self.scheduler = CosineAnnealingWarmupRestarts(
                 optimizer=self.optimizer,
-                schedulers=[
-                    optim.lr_scheduler.LinearLR(
-                        optimizer=self.optimizer,
-                        start_factor=0.1,
-                        total_iters=warmup_epochs
-                        * (len(self.train_loader) // self.grad_accum),
-                    ),
-                    optim.lr_scheduler.CosineAnnealingLR(
-                        optimizer=self.optimizer,
-                        T_max=(self.num_epochs - warmup_epochs)
-                        * (len(self.train_loader) // self.grad_accum),
-                    ),
-                ],
-                milestones=[
-                    warmup_epochs * (len(self.train_loader) // self.grad_accum)
-                ],
+                first_cycle_steps=self.scheduler_conf.get(
+                    "first_cycle_steps", self.num_epochs * steps_per_epoch
+                ),
+                cycle_mult=self.scheduler_conf.get("cycle_mult", 1.0),
+                max_lr=self.scheduler_conf.get("max_lr", self.learning_rate),
+                min_lr=self.scheduler_conf.get("min_lr", 1e-6),
+                warmup_steps=self.scheduler_conf.get(
+                    "warmup_steps", steps_per_epoch
+                ),
+                gamma=self.scheduler_conf.get("gamma", 1.0),
+            )
+            self.scheduler_interval = "step"
+        elif self.scheduler_name.lower() == "WarmupDecayConst".lower():
+            steps_per_epoch = len(self.train_loader) // self.grad_accum
+            self.scheduler = WarmupDecayConstLR(
+                optimizer=self.optimizer,
+                warmup_steps=self.scheduler_conf.get(
+                    "warmup_steps", steps_per_epoch
+                ),
+                decay_steps=self.scheduler_conf.get(
+                    "decay_steps", (self.num_epochs - 1) * steps_per_epoch
+                ),
+                min_lr=self.scheduler_conf.get("min_lr", 1e-6),
             )
             self.scheduler_interval = "step"
         else:
@@ -327,6 +367,9 @@ class Trainer:
     @torch.no_grad()
     def evaluate(self) -> None:
         self.flow.eval()
+        # Always validate with live weights — EMA weights are only used for
+        # checkpointing (best_ema_*.pt). Swapping to EMA during validation
+        # caused diverging val loss while the shadow weights were still warming up.
         loss_sum = 0.0
         num_samples = 0
         for batch in self.val_loader:
@@ -434,6 +477,30 @@ class Trainer:
             self._best_checkpoint_file = new_best_path
             print(f"  -> new best checkpoint: {new_best_name}")
 
+            # Also save a best checkpoint using EMA weights if EMA is active.
+            if isinstance(self.optimizer, EMAOptimizer) and self.optimizer.ema_params:
+                ema_best_name = self._checkpoint_name("best_ema", self.epoch, train_loss, val_loss)
+                ema_best_path = self.get_path(f"checkpoints/{ema_best_name}")
+                # Remove any previous EMA best file.
+                try:
+                    ema_files = [
+                        f for f in os.listdir(self.get_path("checkpoints/"))
+                        if f.startswith("best_ema_epoch_") and f.endswith(".pt")
+                    ]
+                    for old in ema_files:
+                        candidate = self.get_path(f"checkpoints/{old}")
+                        if candidate != ema_best_path:
+                            os.remove(candidate)
+                except OSError:
+                    pass
+                with self.optimizer.swap_ema_weights():
+                    ema_state_dict = self.flow.state_dict()
+                    for key in list(ema_state_dict.keys()):
+                        if "module." in key:
+                            ema_state_dict[key.replace("module.", "")] = ema_state_dict.pop(key)
+                torch.save(ema_state_dict, ema_best_path)
+                print(f"  -> new best EMA checkpoint: {ema_best_name}")
+
         if bool(self.scores) and (self.scores[-1] < self.min_score):
             self.min_score = self.scores[-1]
 
@@ -477,7 +544,19 @@ class Trainer:
         self.grad_norms = checkpoint["grad_norms"]
         self.min_train_loss = checkpoint["min_train_loss"]
         self.min_score = checkpoint["min_score"]
-        self.optimizer.load_state_dict(checkpoint["optimizer"])
+
+        # Load optimizer state, handling EMAOptimizer transparently.
+        opt_state = checkpoint["optimizer"]
+        if isinstance(self.optimizer, EMAOptimizer):
+            if "opt" in opt_state:
+                # Checkpoint was saved with EMA active — restore fully.
+                self.optimizer.load_state_dict(opt_state)
+            else:
+                # Checkpoint was saved without EMA — restore only inner optimizer.
+                self.optimizer.optimizer.load_state_dict(opt_state)
+        else:
+            self.optimizer.load_state_dict(opt_state)
+
         if self.scheduler is not None:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
 

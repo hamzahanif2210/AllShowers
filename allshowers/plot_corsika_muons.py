@@ -3,14 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-ml_file        = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/ml_electron_test.h5"
-simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test.h5"
+ml_file        = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/ml_muons_test.h5"
+simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_muons_test.h5"
 
-# ml_file        = "/n/home04/hhanif/AllShowers/results/20260521_074401_Photon-Allshower/samples01.h5"
-# simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5"
-
-# ml_file        = "/n/home04/hhanif/AllShowers/results/20260520_160031_Muons-Allshower/samples00.h5"
-# simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_muons_test.h5"
 
 
 CLASS_NAMES = {
@@ -304,7 +299,7 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     s_ce = s_ce[s_ce > 0]
     m_ce = m_ce[m_ce > 0]
 
-    e_min = 1e-2  # start at 10^-2 GeV
+    e_min = 7e-1  # start at 10^-2 GeV
     e_max = max(s_ce.max(), m_ce.max())
     bins  = np.logspace(np.log10(e_min), np.log10(e_max), 80)
 
