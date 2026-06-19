@@ -1,9 +1,12 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn.attention.flex_attention import BlockMask
 
 from allshowers import ode_solvers
+from allshowers.loss import build_loss
 from allshowers.transformer import Transformer, compute_mask
 
 __all__ = ["CNF"]
@@ -16,6 +19,7 @@ class CNF(nn.Module):
         network: Transformer,
         frequencies: int = 3,
         solver: str = "heun",
+        loss: dict[str, Any] | str = "MSELoss",
     ) -> None:
         super().__init__()
         self.frequencies = nn.Buffer(
@@ -24,6 +28,7 @@ class CNF(nn.Module):
         self.num_layer_cond = network.num_layer_cond
         self.network = network
         self.set_solver(solver)
+        self.loss_fn = build_loss(loss)
 
     def set_solver(self, solver: str) -> None:
         if solver not in ode_solvers.integrators:
@@ -71,6 +76,7 @@ class CNF(nn.Module):
         return self.solver(self, z, 1.0, 0.0, num_timesteps, **kwargs)
 
     def loss(self, x: Tensor, noise: Tensor | None, **kwargs) -> Tensor:
+        mask = kwargs.get("mask")
         self.__calculate_block_mask(kwargs)
         t = torch.rand(
             [x.shape[0]] + [1] * (x.dim() - 1), device=x.device, dtype=x.dtype
@@ -79,7 +85,9 @@ class CNF(nn.Module):
         y = (1 - t) * x + (1e-4 + (1 - 1e-4) * t) * z
         u = (1 - 1e-4) * z - x
 
-        return (self(t.reshape(-1, 1), y, **kwargs) - u).square()
+        pred = self(t.reshape(-1, 1), y, **kwargs)
+        loss_mask = mask.squeeze(-1) if mask is not None else None
+        return self.loss_fn(pred, u, mask=loss_mask)
 
     def sample(
         self, shape: tuple[int, ...], num_timesteps: int = 200, **kwargs

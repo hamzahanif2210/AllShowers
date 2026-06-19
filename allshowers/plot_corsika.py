@@ -3,11 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-# ml_file        = "/n/home04/hhanif/AllShowers/results/20260519_185649_Electron-Allshower/samples00.h5"
-# simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test.h5"
+ml_file        = "/n/home04/hhanif/AllShowers/results/20260619_135801_Electron-Allshower/samples00.h5"
+simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test.h5"
 
-ml_file        = "/n/home04/hhanif/AllShowers/results/20260521_074401_Photon-Allshower/samples01.h5"
-simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5"
+# ml_file        = "/n/home04/hhanif/AllShowers/results/20260521_074401_Photon-Allshower/samples01.h5"
+# simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5"
 
 # ml_file        = "/n/home04/hhanif/AllShowers/results/20260520_160031_Muons-Allshower/samples00.h5"
 # simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_muons_test.h5"
@@ -34,15 +34,25 @@ def load_file(path):
     N, max_pts, ncols = int(shape[0]), int(shape[1]), int(shape[2])
     print(f"  {N} showers, {max_pts} max pts, {ncols} cols")
 
+    # --- fast vectorised load ---
+    # 1. lengths of every shower (in hits, not floats)
+    lengths = np.array([len(r) // ncols for r in raw], dtype=np.int32)
+
+    # 2. one big concatenation — all data movement happens inside numpy/C
+    flat_all = np.concatenate([np.asarray(r, dtype=np.float32) for r in raw])
+    hits_all = flat_all.reshape(-1, ncols)           # (total_hits, ncols)
+
+    # 3. split back into per-shower arrays and copy into preallocated output
     pts = np.zeros((N, max_pts, ncols), dtype=np.float32)
-    for i, flat in enumerate(raw):
-        arr = np.asarray(flat, dtype=np.float32).reshape(-1, ncols)
-        pts[i, :len(arr)] = arr
+    offsets = np.concatenate([[0], np.cumsum(lengths)])
+    for i, (start, L) in enumerate(zip(offsets[:-1], lengths)):
+        if L > 0:
+            pts[i, :L] = hits_all[start : start + L]
 
     # zero out sub-threshold hits
     pts[..., 3] = np.where(pts[..., 3] >= THRESHOLD, pts[..., 3], 0.0)
 
-    return pts, pdg, ncols, raw
+    return pts, pdg, ncols
 
 
 def compute_longitudinal(pts, num_layers=NUM_LAYERS):
@@ -56,39 +66,6 @@ def compute_longitudinal(pts, num_layers=NUM_LAYERS):
     return energy_per_layer  # shape (N, num_layers)
 
 
-def compute_time_per_layer(pts, ncols, num_layers=NUM_LAYERS):
-    """Mean hit time per layer per shower."""
-    if ncols < 5:
-        return None
-    N = pts.shape[0]
-    time_sum   = np.zeros((N, num_layers), dtype=np.float64)
-    time_count = np.zeros((N, num_layers), dtype=np.float64)
-    mask       = pts[..., 3] > 0
-    layer_idx  = np.clip((pts[..., 2] + 0.1).astype(np.int32), 0, num_layers - 1)
-    t          = pts[..., 4].astype(np.float64)
-
-    for i in range(N):
-        m = mask[i]
-        li = layer_idx[i][m]
-        ti = t[i][m]
-        np.add.at(time_sum[i],   li, ti)
-        np.add.at(time_count[i], li, 1)
-
-    return time_sum / time_count.clip(min=1)  # shape (N, num_layers)
-
-
-def compute_cell_energies(pts):
-    """Flat array of all nonzero hit energies across all showers."""
-    e = pts[..., 3].ravel()
-    return e[e > 0]
-
-
-def compute_longitudinal_time(pts, ncols, num_layers=NUM_LAYERS):
-    """Mean hit time per layer, averaged across showers. shape (N, num_layers)."""
-    if ncols < 5:
-        return None
-    return compute_time_per_layer(pts, ncols, num_layers)
-
 
 def compute_cell_times(pts, ncols):
     """Flat array of hit times for all hits with energy > threshold."""
@@ -98,10 +75,10 @@ def compute_cell_times(pts, ncols):
     return pts[..., 4][mask].astype(np.float64)
 
 
-def compute_radial_time_profile(pts, ncols, n_events, num_bins=35, r_max=400.0):
+def compute_radial_time_profile(pts, ncols, num_bins=35, r_max=400.0):
     """
-    Mean hit time per radial bin (CoG-centred), scaled by count/n_events.
-    Same structure as compute_radial_profile but for the time column.
+    Plain mean hit time per radial bin (CoG-centred).
+    SEM = std / sqrt(count) per bin.
     """
     if ncols < 5:
         return None, None, None
@@ -135,10 +112,9 @@ def compute_radial_time_profile(pts, ncols, n_events, num_bins=35, r_max=400.0):
     std,   _,     _ = binned_statistic(all_dist, all_t, bins=num_bins, statistic="std",   range=(0, r_max))
     count, _,     _ = binned_statistic(all_dist, all_t, bins=num_bins, statistic="count", range=(0, r_max))
 
-    mean_shower = mean * count / n_events
-    sem_shower  = (std / np.sqrt(count.clip(min=1))) * (count / n_events)
+    sem = std / np.sqrt(count.clip(min=1))
 
-    return edges, mean_shower, sem_shower
+    return edges, mean, sem
 
 
 def compute_radial_profile(pts, n_events, num_bins=35, r_max=400.0):
@@ -190,16 +166,14 @@ def compute_radial_profile(pts, n_events, num_bins=35, r_max=400.0):
 # ------------------------------------------------------------------ load
 
 print("Loading Simulated...")
-s_pts, s_pdg, s_ncols, s_raw = load_file(simulated_file)
+s_pts, s_pdg, s_ncols = load_file(simulated_file)
 
 print("Loading ML...")
-m_pts, m_pdg, m_ncols, m_raw = load_file(ml_file)
+m_pts, m_pdg, m_ncols = load_file(ml_file)
 
 print("Computing observables...")
 s_long   = compute_longitudinal(s_pts)
 m_long   = compute_longitudinal(m_pts)
-s_tplane = compute_time_per_layer(s_pts, s_ncols)
-m_tplane = compute_time_per_layer(m_pts, m_ncols)
 # radial profiles computed per-row using capped indices (done inside the plot loop)
 radial_bin_edges = np.linspace(0, 400.0, 36)  # 35 bins, stored for axis use
 radial_bin_centers = 0.5 * (radial_bin_edges[:-1] + radial_bin_edges[1:])
@@ -305,17 +279,19 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     ax_main, ax_ratio = add_ratio_panel(
         fig, outer_gs[row_i, 0],
         layers, sl_mean, ml_mean, sl_sem, ml_sem,
-        xlabel="Plane"
+        xlabel="Observing Plane"
     )
-    ax_main.plot(layers, sl_mean, color=SIM_COLOR, lw=1.5, drawstyle="steps-mid", label=f"Simulated ({n})")
+    ax_main.plot(layers, sl_mean, color=SIM_COLOR, lw=1.5, drawstyle="steps-mid", label=f"CORSIKA ({n})")
     ax_main.fill_between(layers, sl_mean - sl_sem, sl_mean + sl_sem, alpha=0.15, color=SIM_COLOR, step="mid")
     ax_main.plot(layers, ml_mean, color=ML_COLOR,  lw=1.5, drawstyle="steps-mid", label=f"ML ({n})")
     ax_main.fill_between(layers, ml_mean - ml_sem, ml_mean + ml_sem, alpha=0.20, color=ML_COLOR,  step="mid")
     ax_main.set_ylabel("Mean Energy [GeV]", fontsize=8)
-    ax_main.set_xticks(np.arange(1, NUM_LAYERS + 1, 4))
+    ax_main.set_xticks(list(np.arange(1, NUM_LAYERS + 1, 4)) + [NUM_LAYERS])
     ax_main.grid(False)
     ax_main.legend(fontsize=7)
     ax_main.set_title("Longitudinal Energy Profile", fontsize=9)
+    ax_ratio.set_ylim(0.8, 1.2)
+    ax_ratio.set_yticks([0.8, 0.9, 1.0, 1.1, 1.2])
     ax_main.annotate(
         header,
         xy=(0, 1.22), xycoords="axes fraction",
@@ -347,9 +323,11 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     plt.setp(ax_main.get_xticklabels(), visible=False)
 
     ax_main.stairs(s_counts, bins, color=SIM_COLOR, lw=1.5, label=f"Simulated ({n})")
-    ax_main.errorbar(bin_centers, s_counts, yerr=s_err, fmt='none', color=SIM_COLOR, lw=0.8, capsize=2)
+    ax_main.stairs(s_counts + s_err, bins, baseline=s_counts - s_err,
+                   color=SIM_COLOR, alpha=0.2, fill=True)
     ax_main.stairs(m_counts, bins, color=ML_COLOR,  lw=1.5, label=f"ML ({n})")
-    ax_main.errorbar(bin_centers, m_counts, yerr=m_err, fmt='none', color=ML_COLOR,  lw=0.8, capsize=2)
+    ax_main.stairs(m_counts + m_err, bins, baseline=m_counts - m_err,
+                   color=ML_COLOR, alpha=0.2, fill=True)
     ax_main.set_yscale("log")
     ax_main.set_xscale("log")
     ax_main.set_xlim(e_min, e_max)
@@ -427,37 +405,75 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     ax_ratio.set_ylim(0.5, 1.5)
     ax_ratio.set_yticks([0.5, 1.0, 1.5])
 
-    # ---- Col 3: Longitudinal Time Profile ----
-    if s_tplane is not None and m_tplane is not None:
-        st = s_tplane[s_idx]
-        mt = m_tplane[m_idx]
-        st_mean = st.mean(0) * US
-        st_sem  = st.std(0) / np.sqrt(len(s_idx)) * US
-        mt_mean = mt.mean(0) * US
-        mt_sem  = mt.std(0) / np.sqrt(len(m_idx)) * US
+    # ---- Col 3: Mean Hit Time per Shower ----
+    if s_ncols >= 5 and m_ncols >= 5:
+        # compute per-shower mean hit time (only above-threshold hits)
+        def mean_hit_time_per_shower(pts):
+            N = pts.shape[0]
+            result = np.full(N, np.nan)
+            for i in range(N):
+                mask = pts[i, :, 3] > 0
+                if mask.sum() > 0:
+                    result[i] = pts[i, :, 4][mask].mean()
+            return result[~np.isnan(result)] * US  # convert s -> us
 
-        ax_main, ax_ratio = add_ratio_panel(
-            fig, outer_gs[row_i, 3],
-            layers, st_mean, mt_mean, st_sem, mt_sem,
-            xlabel="Plane"
+        s_mht = mean_hit_time_per_shower(s_pts[s_idx])
+        m_mht = mean_hit_time_per_shower(m_pts[m_idx])
+
+        t_lo = min(s_mht.min(), m_mht.min())
+        t_hi = max(s_mht.max(), m_mht.max())
+        t_bins = np.linspace(t_lo, t_hi, 40)  # smaller bins
+        t_centers = 0.5 * (t_bins[:-1] + t_bins[1:])
+
+        s_tcounts, _ = np.histogram(s_mht, bins=t_bins)
+        m_tcounts, _ = np.histogram(m_mht, bins=t_bins)
+        s_terr = np.sqrt(s_tcounts)
+        m_terr = np.sqrt(m_tcounts)
+
+        inner = gridspec.GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=outer_gs[row_i, 3],
+            height_ratios=[3, 1], hspace=0.08
         )
-        ax_main.plot(layers, st_mean, color=SIM_COLOR, lw=1.5, drawstyle="steps-mid", label=f"Simulated ({n})")
-        ax_main.fill_between(layers, st_mean - st_sem, st_mean + st_sem, alpha=0.15, color=SIM_COLOR, step="mid")
-        ax_main.plot(layers, mt_mean, color=ML_COLOR,  lw=1.5, drawstyle="steps-mid", label=f"ML ({n})")
-        ax_main.fill_between(layers, mt_mean - mt_sem, mt_mean + mt_sem, alpha=0.20, color=ML_COLOR,  step="mid")
-        ax_main.set_ylabel(r"Mean $t$ [$\mu$s]", fontsize=8)
-        ax_main.set_xticks(np.arange(1, NUM_LAYERS + 1, 4))
-        ax_main.grid(False)
+        ax_main  = fig.add_subplot(inner[0])
+        ax_ratio = fig.add_subplot(inner[1], sharex=ax_main)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+
+        ax_main.stairs(s_tcounts, t_bins, color=SIM_COLOR, lw=1.5, label=f"Simulated ({n})")
+        ax_main.stairs(s_tcounts + s_terr, t_bins, baseline=s_tcounts - s_terr,
+                       color=SIM_COLOR, alpha=0.2, fill=True)
+        ax_main.stairs(m_tcounts, t_bins, color=ML_COLOR,  lw=1.5, label=f"ML ({n})")
+        ax_main.stairs(m_tcounts + m_terr, t_bins, baseline=m_tcounts - m_terr,
+                       color=ML_COLOR, alpha=0.2, fill=True)
+        ax_main.set_ylabel("Number of Showers", fontsize=8)
+        ax_main.set_title(r"Mean Hit Time per Shower", fontsize=9)
         ax_main.legend(fontsize=7)
-        ax_main.set_title("Longitudinal Time Profile", fontsize=9)
+        ax_main.grid(False)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_ratio = np.where(s_tcounts > 0, m_tcounts / s_tcounts, np.nan)
+            t_ratio_err = np.where(s_tcounts > 0,
+                t_ratio * np.sqrt(1.0 / np.where(m_tcounts > 0, m_tcounts, 1)
+                                + 1.0 / np.where(s_tcounts > 0, s_tcounts, 1)),
+                np.nan)
+        ax_ratio.axhline(1.0, color="gray", lw=0.8, ls="--")
+        ax_ratio.plot(t_centers, t_ratio, color=ML_COLOR, lw=1.2)
+        ax_ratio.fill_between(t_centers, t_ratio - t_ratio_err, t_ratio + t_ratio_err,
+                              alpha=0.25, color=ML_COLOR)
         ax_ratio.set_ylim(0.5, 1.5)
         ax_ratio.set_yticks([0.5, 1.0, 1.5])
+        ax_ratio.set_ylabel("ML / Sim", fontsize=7)
+        ax_ratio.set_xlabel(r"Mean $t$ [$\mu$s]", fontsize=8)
+        ax_ratio.tick_params(labelsize=7)
+        ax_ratio.grid(False)
+
+        for ax in [ax_main, ax_ratio]:
+            ax.tick_params(labelsize=7)
     else:
         fig.add_subplot(outer_gs[row_i, 3]).text(0.5, 0.5, "No time data", ha="center", va="center")
 
     # ---- Col 4: Radial Time Profile ----
-    edges_t, sr_t_mean, sr_t_sem = compute_radial_time_profile(s_pts[s_idx], s_ncols, n_events=len(s_idx), r_max=R_MAX_M)
-    _,        mr_t_mean, mr_t_sem = compute_radial_time_profile(m_pts[m_idx], m_ncols, n_events=len(m_idx), r_max=R_MAX_M)
+    edges_t, sr_t_mean, sr_t_sem = compute_radial_time_profile(s_pts[s_idx], s_ncols, r_max=R_MAX_M)
+    _,        mr_t_mean, mr_t_sem = compute_radial_time_profile(m_pts[m_idx], m_ncols, r_max=R_MAX_M)
 
     if edges_t is not None:
         sr_t_mean *= US;  sr_t_sem *= US
@@ -485,6 +501,6 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     else:
         fig.add_subplot(outer_gs[row_i, 4]).text(0.5, 0.5, "No time data", ha="center", va="center")
 
-out = "shower_observables_reference_style_photon_4.png"
-plt.savefig(out, dpi=300, bbox_inches="tight")
+out = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/shower_observables_reference_style_electron.pdf"
+plt.savefig(out, bbox_inches="tight")
 print(f"Saved → {out}")

@@ -267,10 +267,7 @@ class Trainer:
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(self.device)
-        losses = self.flow.loss(**batch)
-        losses = losses * batch["mask"].to(losses.dtype)
-        losses = torch.mean(losses, dim=(1, 2))
-        return losses
+        return self.flow.loss(**batch)
 
     def fit(self) -> None:
         for epoch in range(self.epoch + 1, self.num_epochs + 1):
@@ -284,8 +281,7 @@ class Trainer:
                 if step // self.grad_accum == len(self.train_loader) // self.grad_accum:
                     continue
                 self.step = step
-                losses = self.get_loss(batch)
-                loss = torch.mean(losses)
+                loss = self.get_loss(batch)
                 loss.backward()
                 self.grad_norms.append(
                     get_total_norm(
@@ -299,8 +295,9 @@ class Trainer:
                     if self.scheduler_interval == "step" and self.scheduler is not None:
                         self.scheduler.step()
                     self.optimizer.zero_grad()
-                train_loss_sum += loss.item() * len(losses)
-                train_loss_count += len(losses)
+                batch_size = len(batch["mask"])
+                train_loss_sum += loss.item() * batch_size
+                train_loss_count += batch_size
                 self.train_losses_batch.append(loss.item())
                 self.learning_rates.append(self.optimizer.param_groups[0]["lr"])
             if self.scheduler_interval == "epoch" and self.scheduler is not None:
@@ -330,10 +327,10 @@ class Trainer:
         loss_sum = 0.0
         num_samples = 0
         for batch in self.val_loader:
-            losses = self.get_loss(batch)
-            loss = torch.mean(losses)
-            loss_sum += loss.item() * len(losses)
-            num_samples += len(losses)
+            loss = self.get_loss(batch)
+            batch_size = len(batch["mask"])
+            loss_sum += loss.item() * batch_size
+            num_samples += batch_size
         self.val_losses.append(loss_sum / num_samples)
 
     def print_and_plot(self) -> None:
