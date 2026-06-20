@@ -6,7 +6,7 @@ python /n/home04/hhanif/AllShowers/allshowers/create_dataset_for_eval.py \
   --num-layers 24 --with-time
 
 python /n/home04/hhanif/AllShowers/allshowers/create_dataset_for_eval.py \
-  --input /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons.h5  \
+  --input /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5  \
   --num-layers 24 --with-time
 
 python /n/home04/hhanif/AllShowers/allshowers/create_dataset_for_eval.py \

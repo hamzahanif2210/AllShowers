@@ -1,0 +1,11 @@
+[KeOps] Warning : CUDA libraries not found or could not be loaded; Switching to CPU only.
+[ 0.03s] Parsing arguments: Namespace(file='/n/home04/hhanif/AllShowers/conf/photons.yaml', with_time=True, fit_only=False, pkl_path=None, big_file=False, chunk_size=1000, chunk_index=None, output_dir=None, merge=False)
+[ 0.03s] Mode: with time (x, y, e, t)
+[ 0.03s] [ORIGINAL MODE] Fitting and processing …
+[ 9.73s] PreProcessor initialized.
+[ 9.73s] batch size: 128
+[ 9.73s] number of batches: 1016
+[ 9.73s] num features: 4  (x, y, e, t)
+[ 9.73s] NoiseMatcher initialized. (noise shape=(130000, 4, 6016))
+[ 2012.86s] All batches processed.
+[ 2046.01s] Noise saved successfully to /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons.h5 (shape=(130000, 6016, 4)).

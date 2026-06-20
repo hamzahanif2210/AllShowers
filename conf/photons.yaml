@@ -29,7 +29,7 @@ model:
   dim_feedforward: 256
   num_points_cond: 512
   activation: GELU
-  num_layer_cond: 8
+  num_layer_cond: 4
   num_particles: 2
   flow_config:
     frequencies: 3
