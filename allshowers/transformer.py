@@ -124,8 +124,8 @@ class FlexEncoderLayer(nn.Module):
         x: Tensor,
         mask: BlockMask,
     ) -> Tensor:
-        x = self.layer_norm1(x + self.multihead_attention(x, mask=mask))
-        x = self.layer_norm2(x + self.feedforward(x))
+        x = x + self.multihead_attention(self.layer_norm1(x), mask=mask)
+        x = x + self.feedforward(self.layer_norm2(x))
         return x
 
 
