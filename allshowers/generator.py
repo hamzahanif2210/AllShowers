@@ -33,6 +33,19 @@ python /n/home04/hhanif/AllShowers/allshowers/generator.py \
   --pdgs 0 1 \
   --max-points 25088 --batch-size 128
 
+# Internal Guidance (IG) example: requires a checkpoint whose model config
+# had intermediate_layer_idx >= 0 during training (see allshowers/transformer.py).
+python /n/home04/hhanif/AllShowers/allshowers/generator.py \
+  --run-dir  /n/home04/hhanif/AllShowers/results/20260715_053633_CNF-Transformer \
+  --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test_data_with_num_points.h5 \
+  --num-samples 6141 \
+  --num-timesteps 16 \
+  --device cuda:0 \
+  --solver midpoint \
+  --pdgs 0 1 \
+  --max-points 4096 \
+  --ig-scale 1.4 --ig-t-min 0.3 --ig-t-max 1.0
+
 """
 
 
@@ -88,6 +101,11 @@ PNDM_SOLVER_NAME = "pndm"
 #   - No EDM schedule, heavy-tail noise init, save_seq, or random_seed
 #     bookkeeping -- none of your other solvers (heun/midpoint/dpm) have these
 #     either, so PNDM is kept consistent with them.
+#
+# Internal Guidance: _velocity_fn calls self.model(...) i.e. CNF.__call__ ->
+# CNF.forward, which already applies IG blending internally if the CNF has
+# had Generator.__init__ call flow.enable_internal_guidance(...) on it. No
+# separate IG handling is needed here.
 # ---------------------------------------------------------------------------
 class PNDMSolver:
     def __init__(self, model_fn, n_steps: int, init_step: str = "rk4") -> None:
@@ -195,6 +213,16 @@ class Generator(nn.Module):
         dpm_order: int = 2,
         dpm_eps: float = 1e-4,
         pndm_init_step: str = "rk4",
+        # --- Internal Guidance (IG) ------------------------------------------
+        # ig_scale == 1.0 (default) disables IG entirely: CNF.forward() then
+        # always returns the final head's output, unchanged from before IG
+        # existed. Requires a checkpoint trained with
+        # transformer.Transformer(intermediate_layer_idx=...) >= 0; otherwise
+        # the network has no intermediate head and IG has no effect regardless
+        # of ig_scale (CNF.forward() falls back to the final head silently).
+        ig_scale: float = 1.0,
+        ig_t_min: float = 0.3,
+        ig_t_max: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -239,6 +267,24 @@ class Generator(nn.Module):
             run_params = yaml.load(f, Loader=yaml.FullLoader)
 
         self.__init_model(run_params["model"], state_dict_file, solver=model_solver)
+
+        # Internal Guidance is a property of the CNF (self.flow), not of the
+        # Transformer itself, and applies uniformly to every solver below
+        # (CNF.sample()'s built-in integrators, DPM_Solver, and PNDMSolver)
+        # since they all invoke self.flow(...) i.e. CNF.forward() as their
+        # single choke point. ig_scale == 1.0 is a strict no-op.
+        if ig_scale != 1.0:
+            if self.flow.network.inter_head is None:
+                warnings.warn(
+                    "ig_scale != 1.0 was requested, but this checkpoint's "
+                    "network has no intermediate head (it was not trained "
+                    "with intermediate_layer_idx >= 0). Internal Guidance "
+                    "will have no effect."
+                )
+            self.flow.enable_internal_guidance(
+                scale=ig_scale, t_min=ig_t_min, t_max=ig_t_max
+            )
+
         self.__init_trafo(run_params["data"], trafo_file)
         self.to(torch.get_default_dtype())
         self.feature_last = run_params["data"].get("feature_last", False)
@@ -365,7 +411,14 @@ class Generator(nn.Module):
     ) -> Tensor:
         """Draw raw (pre-inverse-transform) samples using whichever solver was
         selected at construction time: one of CNF's built-in ODE integrators
-        (heun/euler/midpoint/...), the standalone DPM-Solver, or PNDM."""
+        (heun/euler/midpoint/...), the standalone DPM-Solver, or PNDM.
+
+        Internal Guidance (if enabled via Generator.__init__'s ig_scale) is
+        applied transparently inside self.flow.forward() / self.flow.__call__
+        for every one of these paths, since they all ultimately call
+        self.flow(...) to get a velocity prediction — no solver-specific IG
+        code is needed here.
+        """
         if self.solver_name not in (DPM_SOLVER_NAME, PNDM_SOLVER_NAME):
             return self.flow.sample(
                 shape=shape,
@@ -550,6 +603,38 @@ def get_args(args: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="list of pdg codes for the labels. default: [11, -11, 22, 130, 211, -211, 321, -321, 2112, -2112, 2212, -2212]",
     )
+    parser.add_argument(
+        "--ig-scale",
+        default=1.0,
+        type=float,
+        help=(
+            "Internal Guidance extrapolation weight w: "
+            "D_w = D_i + w * (D_f - D_i). 1.0 (default) disables IG "
+            "entirely. Requires a checkpoint trained with "
+            "intermediate_layer_idx >= 0 in its model config; otherwise this "
+            "flag has no effect (a warning is printed)."
+        ),
+    )
+    parser.add_argument(
+        "--ig-t-min",
+        default=0.3,
+        type=float,
+        help=(
+            "Lower bound (exclusive) of the guidance interval in this "
+            "codebase's t in [0, 1] convention (t=0 data, t=1 noise). "
+            "Internal Guidance is only applied while ig_t_min < t < "
+            "ig_t_max. Only used when --ig-scale != 1.0. default: 0.3"
+        ),
+    )
+    parser.add_argument(
+        "--ig-t-max",
+        default=1.0,
+        type=float,
+        help=(
+            "Upper bound (exclusive) of the guidance interval. Only used "
+            "when --ig-scale != 1.0. default: 1.0"
+        ),
+    )
     return parser.parse_args(args)
 
 
@@ -598,6 +683,9 @@ def main(args: list[str] | None = None) -> None:
         dpm_order=parsed_args.dpm_order,
         dpm_eps=parsed_args.dpm_eps,
         pndm_init_step=parsed_args.pndm_init_step,
+        ig_scale=parsed_args.ig_scale,
+        ig_t_min=parsed_args.ig_t_min,
+        ig_t_max=parsed_args.ig_t_max,
     )
 
     print_time(f"time mode: {'ON (x,y,e,t)' if generator.with_time else 'OFF (x,y,e)'}")

@@ -144,6 +144,16 @@ class Transformer(nn.Module):
         num_layer_cond: int = -1,
         num_particles: int = 1,
         dropout: float = 0.0,
+        # --- Internal Guidance (IG) ---------------------------------------
+        # Index (0-based, into transformer_blocks) of the block whose output
+        # should additionally be decoded by a second ("weak") output head.
+        # -1 (default) disables IG entirely: no second head is created and
+        # forward() returns None for the intermediate output, exactly like
+        # before this feature existed. Per the IG paper's ablation (their
+        # Table 2), this should be an *early* block (e.g. 2-4 out of ~12-28),
+        # not a late one -- supervising late blocks does not help and can
+        # hurt convergence of the final head.
+        intermediate_layer_idx: int = -1,
     ) -> None:
         super().__init__()
         self.num_layer_cond = num_layer_cond
@@ -191,11 +201,26 @@ class Transformer(nn.Module):
         else:
             self.dropout = nn.Identity()
 
+        if intermediate_layer_idx >= num_blocks:
+            raise ValueError(
+                f"intermediate_layer_idx ({intermediate_layer_idx}) must be < "
+                f"num_blocks ({num_blocks})."
+            )
+        self.intermediate_layer_idx = intermediate_layer_idx
+
         self.head = nn.Linear(dim_embedding, dim_inputs[0])
+        if intermediate_layer_idx >= 0:
+            self.inter_head = nn.Linear(dim_embedding, dim_inputs[0])
+        else:
+            self.inter_head = None
+
         if identity_init:
             with torch.no_grad():
                 self.head.weight.fill_(0.0)
                 self.head.bias.fill_(0.0)
+                if self.inter_head is not None:
+                    self.inter_head.weight.fill_(0.0)
+                    self.inter_head.bias.fill_(0.0)
 
     def forward(
         self,
@@ -206,7 +231,7 @@ class Transformer(nn.Module):
         layer: Tensor,
         block_mask: BlockMask,
         label: Tensor | None = None,
-    ) -> Tensor:
+    ) -> tuple[Tensor, Tensor | None]:
         x = self.embedding(x)
         x += self.layer_embedding(layer.squeeze())
         cond = torch.cat([t, cond], dim=1)
@@ -219,6 +244,11 @@ class Transformer(nn.Module):
                 num_points.to(torch.get_default_dtype())
             )
             x += num_points.unsqueeze(1)
-        for block in self.transformer_blocks:
+
+        inter_out = None
+        for i, block in enumerate(self.transformer_blocks):
             x = block(x, mask=block_mask)
-        return self.head(x)
+            if self.inter_head is not None and i == self.intermediate_layer_idx:
+                inter_out = self.inter_head(x)
+
+        return self.head(x), inter_out

@@ -28,11 +28,14 @@ model:
   activation: GELU
   num_layer_cond: 8
   num_particles: 2
+  intermediate_layer_idx: 1      
   flow_config:
     frequencies: 3
+    ig_loss_weight: 0.5    
+
 
 train:
-  num_epochs: 100
+  num_epochs: 20
   batch_size: 256
   learning_rate: 1.e-3
   optimizer: Ranger
