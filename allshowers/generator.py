@@ -9,8 +9,7 @@ python /n/home04/hhanif/AllShowers/allshowers/generator.py \
   --pdgs 0 1 \
   --max-points 4096
 
-python /n/home04/hhanif/AllShowers/allshowers/generator.py   --run-dir   /n/home04/hhanif/AllShowers/results/20260715_183520_Photons   --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test_data_with_num_points.h5   --num-samples 6141   --num-timesteps 16   --device cuda:0   --solver dpm --dpm-order 2   --pdgs 0 1   --max-points 6016
-
+python /n/home04/hhanif/AllShowers/allshowers/generator.py   --run-dir   /n/home04/hhanif/AllShowers/results/20260715_183520_Photons   --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test_data_with_num_points.h5   --num-samples 6141  --device cuda:0   --solver dpm --dpm-order 2   --pdgs 0 1   --max-points 6016 --num-timesteps 4
 
 python /n/home04/hhanif/AllShowers/allshowers/generator.py \
   --run-dir   /n/home04/hhanif/AllShowers/results/20260715_183520_Photons \
