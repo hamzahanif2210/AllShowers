@@ -11,7 +11,6 @@ __all__ = ["FlexEncoderLayer", "Transformer", "compute_mask"]
 
 create_block_mask = torch.compile(create_block_mask)
 
-
 def compute_mask(
     padding_mask: Tensor,
     layer: Tensor,
@@ -31,8 +30,7 @@ def compute_mask(
             )
             upper_bound = layer[b, q_idx] - layer[b, kv_idx] <= num_layer_cond // 2
             not_padding = padding_mask[b, q_idx] & padding_mask[b, kv_idx]
-            return (lower_bound & upper_bound & not_padding) | (q_idx == kv_idx)
-
+            return lower_bound & upper_bound & not_padding
 
     sequence_length = padding_mask.shape[1]
     batch_size = padding_mask.shape[0]

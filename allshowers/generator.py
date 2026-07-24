@@ -2,7 +2,7 @@
 
 
 python /n/home04/hhanif/AllShowers/allshowers/generator.py \
-  --run-dir  /n/home04/hhanif/AllShowers/results/20260519_185649_Electron-Allshower \
+  --run-dir  /n/home04/hhanif/AllShowers/results/20260722_094249_Electron-Allshower \
   --cond_file /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test_data_with_num_points.h5 \
   --num-samples 6141 \
   --num-timesteps 16 \

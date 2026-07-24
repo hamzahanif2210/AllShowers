@@ -20,7 +20,6 @@ data:
 
 
 model:
-  identity_init: true        # Fix 1: zero-init output head
   num_layers: 24
   dim_inputs: [4, 6, 4]   
   dim_embedding: 64
@@ -29,17 +28,16 @@ model:
   dim_feedforward: 256
   num_points_cond: 512
   activation: GELU
-  num_layer_cond: 4
+  num_layer_cond: 8
   num_particles: 2
   flow_config:
     frequencies: 3
 
 train:
-  num_epochs: 200
+  num_epochs: 100
   batch_size: 256
   learning_rate: 1.e-3
   optimizer: Ranger
   scheduler: Cosine
   weight_decay: 1.e-2
   grad_clip: 0.2
-       # change from 0.2

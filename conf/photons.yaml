@@ -20,7 +20,6 @@ data:
 
 
 model:
-  identity_init: true        # Fix 1: zero-init output head
   num_layers: 24
   dim_inputs: [4, 6, 4]   
   dim_embedding: 64
