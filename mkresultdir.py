@@ -7,7 +7,7 @@ mkresultdir.py
 """
 python /n/home04/hhanif/AllShowers/mkresultdir.py /n/home04/hhanif/AllShowers/conf/electrons.yaml -p gpu_requeue -g 1 -n 1 --mem 64G --time 7:00:00 -r
 
-python /n/home04/hhanif/AllShowers/mkresultdir.py /n/home04/hhanif/AllShowers/conf/photons.yaml -p gpu_requeue -g 1 -n 1 --mem 128G --time 8:00:00 -r
+python /n/home04/hhanif/AllShowers/mkresultdir.py /n/home04/hhanif/AllShowers/conf/photons.yaml -p gpu_requeue -g 1 -n 1 --mem 128G --time 24:00:00 -r
 
 
 python /n/home04/hhanif/AllShowers/mkresultdir.py /n/home04/hhanif/AllShowers/conf/muons.yaml -p gpu -g 1 -n 1 --mem 500G --time 12:00:00 -r

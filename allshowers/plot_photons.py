@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-ml_file        = "/n/home04/hhanif/AllShowers/results/20260724_074127_Electron-Allshower/samples01.h5"
-simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_electrons_test.h5"
+ml_file        = "/n/home04/hhanif/AllShowers/results/20260724_074020_Photon-Allshower/samples00.h5"
+simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5"
 
 # ml_file        = "/n/home04/hhanif/AllShowers/results/20260521_074401_Photon-Allshower/samples01.h5"
 # simulated_file = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/combined_photons_test.h5"
@@ -501,6 +501,6 @@ for row_i, (row_label, class_val) in enumerate(row_configs):
     else:
         fig.add_subplot(outer_gs[row_i, 4]).text(0.5, 0.5, "No time data", ha="center", va="center")
 
-out = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/shower_observables_reference_style_electron1_32_time_step.pdf"
+out = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3/shower_observables_reference_style_photons.pdf"
 plt.savefig(out, bbox_inches="tight")
 print(f"Saved → {out}")

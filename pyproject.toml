@@ -17,7 +17,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pyyaml",
-    "torch",
+    "torch>=2.8.0,<2.9.0",
     "rangerlite>=1.0.0,<1.1.0",
     "showerdata>=0.6.0,<0.7.0",
     "pot==0.9.5",
